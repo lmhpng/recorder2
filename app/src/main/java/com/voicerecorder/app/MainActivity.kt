@@ -76,7 +76,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getPrefs() = getSharedPreferences("recordings_meta", MODE_PRIVATE)
-
     private fun getRecordingsDir() = File(filesDir, "recordings").also { if (!it.exists()) it.mkdirs() }
 
     private fun loadRecordings() {
@@ -109,7 +108,6 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) { "00:00" }
     }
 
-    // ===== 录音 =====
     private fun startRecording() {
         val dateStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         currentFile = File(getRecordingsDir(), "录音_$dateStr.m4a")
@@ -159,7 +157,6 @@ class MainActivity : AppCompatActivity() {
         }, 100)
     }
 
-    // ===== 播放 =====
     private fun playRecording(recording: Recording) {
         mediaPlayer?.release()
         mediaPlayer = MediaPlayer().apply {
@@ -170,7 +167,6 @@ class MainActivity : AppCompatActivity() {
         adapter.setPlaying(recording.id)
     }
 
-    // ===== 删除 =====
     private fun deleteRecording(recording: Recording) {
         AlertDialog.Builder(this)
             .setTitle("删除录音")
@@ -188,15 +184,14 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("取消", null).show()
     }
 
-    // ===== 保存文字（同时清除旧总结）=====
     private fun saveTranscript(recordingId: String, text: String) {
         getPrefs().edit()
             .putString("transcript_$recordingId", text)
-            .remove("summary_$recordingId") // ⚠️ 文字变了，必须清除旧总结
+            .remove("summary_$recordingId") // 文字变了清除旧总结
             .apply()
     }
 
-    // ===== 讯飞语音转文字 =====
+    // 语音转文字（硅基流动 SenseVoiceSmall）
     private fun transcribeRecording(recording: Recording) {
         val file = File(recording.filePath)
         if (!file.exists()) {
@@ -206,16 +201,9 @@ class MainActivity : AppCompatActivity() {
 
         val loadingDialog = AlertDialog.Builder(this)
             .setTitle("🎙️ 语音转文字")
-            .setMessage("正在上传录音到讯飞服务器...\n预计需要10~30秒 ⏳")
+            .setMessage("正在识别中，请稍候...\n预计需要5~15秒 ⏳")
             .setCancelable(false).create()
         loadingDialog.show()
-
-        val hints = listOf(8000L to "⏳ 识别中，请稍候...", 20000L to "⏳ 还在处理，快好了...")
-        hints.forEach { (delay, msg) ->
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (loadingDialog.isShowing) loadingDialog.setMessage(msg)
-            }, delay)
-        }
 
         lifecycleScope.launch {
             try {
@@ -223,7 +211,15 @@ class MainActivity : AppCompatActivity() {
                 loadingDialog.dismiss()
                 saveTranscript(recording.id, transcript)
                 loadRecordings()
-                showTranscriptResultDialog(recording, transcript)
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("✅ 转文字完成")
+                    .setMessage(transcript)
+                    .setPositiveButton("立即AI总结 🤖") { _, _ ->
+                        val updated = recordingsList.find { it.id == recording.id }
+                        if (updated != null) generateAiSummary(updated)
+                    }
+                    .setNeutralButton("复制") { _, _ -> copyToClipboard(transcript) }
+                    .setNegativeButton("关闭", null).show()
             } catch (e: Exception) {
                 loadingDialog.dismiss()
                 AlertDialog.Builder(this@MainActivity)
@@ -235,20 +231,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showTranscriptResultDialog(recording: Recording, transcript: String) {
-        AlertDialog.Builder(this)
-            .setTitle("✅ 转文字完成")
-            .setMessage(transcript)
-            .setPositiveButton("立即AI总结 🤖") { _, _ ->
-                val updated = recordingsList.find { it.id == recording.id }
-                if (updated != null) generateSummary(updated)
-            }
-            .setNeutralButton("复制") { _, _ -> copyToClipboard(transcript) }
-            .setNegativeButton("关闭", null).show()
-    }
-
     private fun showManualInputDialog(recording: Recording) {
-        val editText = EditText(this).apply {
+        val editText = android.widget.EditText(this).apply {
             hint = "在此输入文字内容..."
             minLines = 4; maxLines = 10
             setPadding(40, 20, 40, 20)
@@ -260,15 +244,15 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("保存") { _, _ ->
                 val text = editText.text.toString().trim()
                 if (text.isNotEmpty()) {
-                    saveTranscript(recording.id, text) // 同时清除旧总结
+                    saveTranscript(recording.id, text)
                     loadRecordings()
-                    Toast.makeText(this, "已保存，旧总结已清除", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
                 }
             }
             .setNegativeButton("取消", null).show()
     }
 
-    // ===== AI 智能总结 =====
+    // AI总结（硅基流动 DeepSeek-V3 真正AI总结）
     private fun showSummary(recording: Recording) {
         val current = recordingsList.find { it.id == recording.id } ?: recording
         if (current.transcript.isNullOrEmpty()) {
@@ -279,102 +263,33 @@ class MainActivity : AppCompatActivity() {
                 .setNegativeButton("取消", null).show()
             return
         }
-        // 每次都重新生成，确保基于最新文字
-        generateSummary(current)
+        generateAiSummary(current)
     }
 
-    private fun generateSummary(recording: Recording) {
+    private fun generateAiSummary(recording: Recording) {
         val transcript = recording.transcript ?: return
         val loadingDialog = AlertDialog.Builder(this)
-            .setTitle("🤖 AI 总结生成中...")
-            .setMessage("正在分析内容要点...")
+            .setTitle("🤖 AI总结生成中...")
+            .setMessage("DeepSeek 正在分析内容，请稍候...")
             .setCancelable(false).create()
         loadingDialog.show()
 
-        Handler(Looper.getMainLooper()).postDelayed({
-            val summary = buildAiSummary(transcript)
-            // 保存最新总结
-            getPrefs().edit().putString("summary_${recording.id}", summary).apply()
-            loadingDialog.dismiss()
-            loadRecordings()
-            showSummaryDialog(recording.name, summary)
-        }, 500)
-    }
-
-    private fun buildAiSummary(text: String): String {
-        val cleanText = text.trim()
-        val charCount = cleanText.length
-        val sentences = cleanText.split(Regex("[。！？.!?\\n]")).map { it.trim() }.filter { it.length > 3 }
-        val estimatedSecs = (charCount * 0.3).toInt()
-        val durationStr = if (estimatedSecs >= 60) "${estimatedSecs / 60}分${estimatedSecs % 60}秒" else "${estimatedSecs}秒"
-
-        return buildString {
-            append("━━━━━━━━━━━━━━━━━━\n")
-            append("🤖  AI 智能总结\n")
-            append("━━━━━━━━━━━━━━━━━━\n\n")
-            append("📊 基本信息\n")
-            append("字数：$charCount 字  句数：${sentences.size} 句  约$durationStr\n\n")
-            append("📌 核心内容\n")
-            append(extractCoreSummary(sentences, cleanText))
-            append("\n\n")
-            val keyPoints = extractKeyPoints(sentences)
-            if (keyPoints.isNotEmpty()) {
-                append("💡 要点提炼\n")
-                keyPoints.forEachIndexed { i, p -> append("${i + 1}. $p\n") }
-                append("\n")
-            }
-            val keywords = extractKeywords(cleanText)
-            if (keywords.isNotEmpty()) {
-                append("🏷️ 关键词\n")
-                append(keywords.joinToString("  |  "))
-            }
-            append("\n━━━━━━━━━━━━━━━━━━")
-        }
-    }
-
-    private fun extractCoreSummary(sentences: List<String>, fullText: String): String {
-        if (sentences.isEmpty()) return fullText.take(50).ifEmpty { "（内容为空）" }
-        return sentences.take(2).joinToString("，") { it.take(35) } +
-                if (fullText.length > 70) "……" else ""
-    }
-
-    private fun extractKeyPoints(sentences: List<String>): List<String> {
-        val markers = listOf("首先", "其次", "然后", "最后", "第一", "第二", "第三",
-            "重要", "注意", "需要", "应该", "建议", "总结", "关键", "因此", "所以")
-        val result = mutableListOf<String>()
-        for (s in sentences) {
-            if (result.size >= 5) break
-            if (markers.any { s.contains(it) } && s.length >= 6)
-                result.add(if (s.length > 42) s.take(42) + "..." else s)
-        }
-        if (result.isEmpty() && sentences.size >= 2) {
-            listOf(0, sentences.size / 2, sentences.size - 1).distinct().forEach { i ->
-                if (result.size < 3 && sentences[i].length >= 6) result.add(sentences[i].take(42))
+        lifecycleScope.launch {
+            try {
+                val summary = IFlytekService.generateSummary(transcript)
+                getPrefs().edit().putString("summary_${recording.id}", summary).apply()
+                loadingDialog.dismiss()
+                loadRecordings()
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("🤖 AI总结 - ${recording.name}")
+                    .setMessage(summary)
+                    .setPositiveButton("关闭", null)
+                    .setNeutralButton("复制") { _, _ -> copyToClipboard(summary) }.show()
+            } catch (e: Exception) {
+                loadingDialog.dismiss()
+                Toast.makeText(this@MainActivity, "总结失败：${e.message}", Toast.LENGTH_LONG).show()
             }
         }
-        return result
-    }
-
-    private fun extractKeywords(text: String): List<String> {
-        val stopWords = setOf("的", "了", "在", "是", "我", "你", "他", "她", "们", "这", "那",
-            "有", "和", "也", "都", "很", "就", "不", "没", "会", "能", "要", "一个", "什么")
-        val freq = mutableMapOf<String, Int>()
-        for (len in 2..4) {
-            for (i in 0..text.length - len) {
-                val w = text.substring(i, i + len)
-                if (!stopWords.any { w.contains(it) } && w.all { it.code > 127 })
-                    freq[w] = (freq[w] ?: 0) + 1
-            }
-        }
-        return freq.entries.filter { it.value >= 2 }.sortedByDescending { it.value }.take(6).map { it.key }
-    }
-
-    private fun showSummaryDialog(name: String, summary: String) {
-        AlertDialog.Builder(this)
-            .setTitle("🤖 AI 总结 - $name")
-            .setMessage(summary)
-            .setPositiveButton("关闭", null)
-            .setNeutralButton("复制") { _, _ -> copyToClipboard(summary) }.show()
     }
 
     private fun copyToClipboard(text: String) {
