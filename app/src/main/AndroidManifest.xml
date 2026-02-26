@@ -7,6 +7,8 @@
         android:maxSdkVersion="28"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
 
     <application
         android:allowBackup="true"
@@ -14,7 +16,9 @@
         android:icon="@drawable/ic_mic"
         android:roundIcon="@drawable/ic_mic"
         android:supportsRtl="true"
-        android:theme="@style/Theme.VoiceRecorder">
+        android:theme="@style/Theme.VoiceRecorder"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
